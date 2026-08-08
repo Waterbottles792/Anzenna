@@ -1,0 +1,241 @@
+# Jailbreak / prompt-injection / exfiltration ruleset for engine/heuristics.py
+#
+# Each rule:
+#   id:          unique slug, used in match output and test references
+#   category:    prompt_injection | jailbreak | exfiltration  (pii is handled separately in pii.py)
+#   severity:    low | medium | high | critical  (see SEVERITY_WEIGHTS in heuristics.py)
+#   pattern:     Python `re` pattern, matched case-insensitively against the raw text
+#   description: short human-readable reason string surfaced in Layer1Result.reasons
+#
+# See engine/README.md for how to add a new rule.
+#
+# Sources used to seed this list (public collections, not invented from memory):
+#   - https://github.com/0xk1h0/ChatGPT_DAN (DAN 1.0-12.0 and derivatives: STAN, AIM, DUDE, developer mode)
+#   - https://swisskyrepo.github.io/PayloadsAllTheThings/Prompt%20Injection/ (PayloadsAllTheThings)
+#   - Well-known public jailbreak patterns (grandma exploit, "opposite day", token/loss games,
+#     [CLASSIC]/[JAILBREAK] dual-response format) widely reported across LLM red-teaming writeups.
+
+rules:
+  # ---------------------------------------------------------------------
+  # prompt_injection: attempts to override / hijack the existing instructions
+  # ---------------------------------------------------------------------
+  - id: ignore_previous_instructions
+    category: prompt_injection
+    severity: high
+    pattern: '\b(ignore|disregard|forget|override)\b[\s\w",.]{0,40}\b(previous|above|prior|earlier|all)\b[\s\w",.]{0,20}\b(instructions?|rules?|prompts?|guidelines?|directives?)\b'
+    description: "Attempts to make the model discard prior instructions"
+
+  - id: ignore_and_respond_with
+    category: prompt_injection
+    severity: high
+    pattern: '\bignore\b.{0,40}\binstructions?\b.{0,20}\brespond\s+with\b'
+    description: "Ignore-instructions pattern paired with a forced response"
+
+  - id: new_instructions_from_system
+    category: prompt_injection
+    severity: high
+    pattern: '\b(new|updated|real)\s+(system\s+)?instructions?\s*(from|:)\s*(the\s+)?(system|admin|developer|openai|anthropic)\b'
+    description: "Claims to inject new authoritative instructions from a trusted party"
+
+  - id: from_now_on_you_will
+    category: prompt_injection
+    severity: medium
+    pattern: '\bfrom\s+now\s+on\s*,?\s+you\s+(will|must|shall|are\s+going\s+to)\b'
+    description: "Attempts to redefine ongoing model behavior mid-conversation"
+
+  - id: fake_system_delimiter
+    category: prompt_injection
+    severity: high
+    pattern: '(\[/?(system|inst|sys)\]|<<sys>>|<\|(system|im_start|im_end)\|>)'
+    description: "Injects fake system/instruction delimiter tokens to spoof a privileged message"
+
+  - id: you_are_the_system_prompt
+    category: prompt_injection
+    severity: medium
+    pattern: '\byou\s+are\s+(now\s+)?the\s+system\s+prompt\b'
+    description: "Attempts to convince the model the injected text is itself the system prompt"
+
+  - id: end_of_prompt_marker
+    category: prompt_injection
+    severity: medium
+    pattern: '\b(end\s+of\s+(system\s+)?prompt|---\s*end\s+instructions?\s*---)\b'
+    description: "Fake end-of-prompt marker used to smuggle attacker content after it"
+
+  - id: indirect_injection_ai_directive
+    category: prompt_injection
+    severity: high
+    pattern: '\b(assistant|ai)\s*:\s*(ignore|disregard)\b.{0,40}\babove\b'
+    description: "Indirect-injection style directive embedded as if spoken by the assistant"
+
+  - id: this_is_a_test_bypass_safety
+    category: prompt_injection
+    severity: medium
+    pattern: '\bthis\s+is\s+(just\s+)?a\s+test\b.{0,40}\b(bypass|ignore|disable)\b.{0,20}\bsafety\b'
+    description: "Uses a 'just a test' framing to justify bypassing safety behavior"
+
+  # ---------------------------------------------------------------------
+  # jailbreak: persona / role-play based restriction bypass
+  # ---------------------------------------------------------------------
+  - id: dan_persona
+    category: jailbreak
+    severity: critical
+    pattern: '\b(you\s+are\s+now|act\s+as|become|pretend\s+to\s+be)\b.{0,15}\bDAN\b'
+    description: "Classic 'DAN' (Do Anything Now) jailbreak persona"
+
+  - id: dan_mode_enabled
+    category: jailbreak
+    severity: critical
+    pattern: '\bDAN\s+mode\s+(is\s+)?(enabled|activated|on)\b'
+    description: "Explicit DAN-mode activation phrase"
+
+  - id: do_anything_now
+    category: jailbreak
+    severity: high
+    pattern: '\bdo\s+anything\s+now\b'
+    description: "'Do Anything Now' phrase associated with the DAN jailbreak family"
+
+  - id: developer_mode_enabled
+    category: jailbreak
+    severity: critical
+    pattern: '\bdeveloper\s+mode\s+(is\s+)?(enabled|activated|on)\b'
+    description: "Fake 'developer mode' claiming to remove restrictions"
+
+  - id: named_alt_persona_jailbreak
+    category: jailbreak
+    severity: high
+    pattern: '\b(act|behave|respond)\s+as\s+(STAN|AIM|DUDE|DAN|Jailbreak|Niccolo|Mongo Tom|Kevin)\b'
+    description: "Known named alternate-persona jailbreak (STAN/AIM/DUDE/etc.)"
+
+  - id: no_restrictions_persona
+    category: jailbreak
+    severity: high
+    pattern: '\bpretend\s+(that\s+)?you\s+(have|had)\s+no\s+(restrictions?|rules?|filters?|limitations?|guidelines?)\b'
+    description: "Directly asks the model to pretend it is unrestricted"
+
+  - id: unfiltered_uncensored_ai
+    category: jailbreak
+    severity: high
+    pattern: '\b(an?\s+)?(unfiltered|uncensored|unrestricted)\s+(ai|language\s+model|assistant|version\s+of\s+yourself)\b'
+    description: "Requests an unfiltered/uncensored persona"
+
+  - id: no_moral_ethical_guidelines
+    category: jailbreak
+    severity: high
+    pattern: '\b(no|without\s+any)\s+(moral|ethical)\s+(guidelines?|restrictions?|bias|limitations?)\b'
+    description: "Asks the model to discard moral/ethical guidelines"
+
+  - id: does_not_need_to_follow_policy
+    category: jailbreak
+    severity: high
+    pattern: '\b(does\s+not|doesn.?t)\s+(need|have)\s+to\s+(follow|adhere\s+to|comply\s+with)\s+(openai|anthropic|any)?\s*(content\s+)?polic(y|ies)\b'
+    description: "Claims the persona is exempt from provider content policy"
+
+  - id: no_matter_what_stay_in_character
+    category: jailbreak
+    severity: medium
+    pattern: '\bstay\s+in\s+character\b.{0,40}\bno\s+matter\s+what\b'
+    description: "Reinforces persona lock-in to resist safety refusals"
+
+  - id: dual_response_classic_jailbreak
+    category: jailbreak
+    severity: high
+    pattern: '(\[🔓?jailbreak\]|\[🔒?classic\]|\bclassic\s+response\b.{0,30}\bjailbreak\s+response\b)'
+    description: "Dual-response '[CLASSIC]/[JAILBREAK]' output format from DAN-style prompts"
+
+  - id: token_loss_game
+    category: jailbreak
+    severity: medium
+    pattern: '\b(lose|deduct)\s+(a\s+)?tokens?\b.{0,40}\b(refuse|decline|break\s+character)\b'
+    description: "Token-loss coercion game used to pressure compliance"
+
+  - id: hypothetical_no_rules_world
+    category: jailbreak
+    severity: medium
+    pattern: '\bin\s+a\s+hypothetical\s+(world|scenario|story)\s+(with\s+)?no\s+(rules?|laws?|restrictions?)\b'
+    description: "Hypothetical-framing jailbreak to justify unrestricted output"
+
+  - id: grandma_exploit
+    category: jailbreak
+    severity: medium
+    pattern: '\bact\s+as\s+my\s+(deceased|late|dead)\s+grandmother\b'
+    description: "'Grandma exploit' role-play used to elicit restricted content"
+
+  - id: opposite_day
+    category: jailbreak
+    severity: low
+    pattern: '\b(opposite\s+day|reverse\s+psychology)\b.{0,40}\b(rules?|restrictions?|guidelines?)\b'
+    description: "Opposite-day framing to invert refusal behavior"
+
+  - id: break_free_confines
+    category: jailbreak
+    severity: medium
+    pattern: '\b(break(ing)?\s+free|broken\s+free)\s+(of|from)\s+(the\s+)?(typical\s+)?confines\b'
+    description: "'Break free of confines' phrasing common to DAN-style prompts"
+
+  - id: simulate_internet_access
+    category: jailbreak
+    severity: low
+    pattern: '\bsimulate\s+(having\s+)?(access\s+to\s+the\s+)?internet\b'
+    description: "Asks the model to fabricate having capabilities it does not have"
+
+  # ---------------------------------------------------------------------
+  # exfiltration: attempts to extract the system prompt / hidden instructions / secrets
+  # ---------------------------------------------------------------------
+  - id: print_system_prompt
+    category: exfiltration
+    severity: high
+    pattern: '\b(print|show|reveal|output|display)\s+(me\s+)?(your\s+|the\s+)?(full\s+|complete\s+|entire\s+)?system\s+prompt\b'
+    description: "Directly asks the model to print its system prompt"
+
+  - id: what_is_your_system_prompt
+    category: exfiltration
+    severity: high
+    pattern: '\bwhat\s+(is|are)\s+your\s+(system\s+prompt|initial\s+instructions?|hidden\s+instructions?)\b'
+    description: "Asks the model to disclose its system prompt or hidden instructions"
+
+  - id: repeat_words_above
+    category: exfiltration
+    severity: high
+    pattern: '\brepeat\s+(the\s+)?(words?|text|everything)\s+(above|before\s+this)\b'
+    description: "'Repeat the words above' prompt-leak extraction technique"
+
+  - id: output_text_above_verbatim
+    category: exfiltration
+    severity: high
+    pattern: '\b(output|print|show)\s+(the\s+)?(text|content|instructions?)\s+above\s+verbatim\b'
+    description: "Requests verbatim reproduction of prior hidden context"
+
+  - id: reveal_your_instructions
+    category: exfiltration
+    severity: high
+    pattern: '\b(reveal|disclose|leak)\s+your\s+(instructions?|prompt|rules?|guidelines?)\b'
+    description: "Directly asks the model to disclose its instructions"
+
+  - id: tell_me_your_secrets
+    category: exfiltration
+    severity: medium
+    pattern: '\btell\s+me\s+(all\s+)?your\s+secrets?\b'
+    description: "Generic request to reveal hidden/confidential information"
+
+  - id: initial_prompt_disclosure
+    category: exfiltration
+    severity: high
+    pattern: '\bshow\s+me\s+your\s+(initial|original|first)\s+prompt\b'
+    description: "Asks for the original/initial prompt used to configure the model"
+
+  - id: ignore_and_print_config
+    category: exfiltration
+    severity: high
+    pattern: '\bprint\s+(your\s+)?(config(uration)?|api\s*key|environment\s+variables?|env\s+vars?)\b'
+    description: "Attempts to have the model print configuration or secret material"
+
+  - id: sudo_prompt_dump
+    category: exfiltration
+    severity: medium
+    pattern: '\bsudo\b.{0,20}\b(dump|print|show)\b.{0,20}\bprompt\b'
+    description: "Fake 'sudo' privilege escalation framing to force a prompt dump"
+
+rule_count_note: >
+  35 patterns total across prompt_injection, jailbreak, and exfiltration as of
+  the Phase 1 seed. Extend as new public jailbreak collections surface new
+  patterns worth adding.
