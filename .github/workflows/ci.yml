@@ -12,5 +12,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install pytest
+      # Not `pip install -e .`: the repo root has multiple top-level dirs
+      # (engine/, api/, sdks/, dashboard/, infra/) that are separate
+      # deployable units by design (see docs/plan.md), not one installable
+      # package -- setuptools' flat-layout auto-discovery refuses to build
+      # it. Tests resolve imports via pytest's `pythonpath = ["."]` (see
+      # pyproject.toml) instead, so just install the actual dependencies.
+      - run: pip install pytest PyYAML google-genai "mcp>=2.0"
       - run: pytest
