@@ -21,6 +21,7 @@ from typing import Optional
 
 from engine.layer1 import Layer1Result, run_layer1
 from engine.llm_judge import JudgeFn, Layer3Result, run_layer3
+from engine.owasp import owasp_tags_for
 
 # ponytail: one fixed cutoff, not a tunable scoring engine -- Phase 5 owns the
 # real cross-layer scoring formula once it exists (see docs/plan.md Phase 5).
@@ -36,6 +37,7 @@ class McpToolResult:
     risk_score: float  # 0-100
     categories: list[str]
     reasons: list[str]
+    owasp: dict
     layer1: Layer1Result
     layer3: Optional[Layer3Result]
 
@@ -46,6 +48,7 @@ class McpToolResult:
             "risk_score": self.risk_score,
             "categories": self.categories,
             "reasons": self.reasons,
+            "owasp": self.owasp,
             "layer_results": {
                 "heuristics": self.layer1.to_dict(),
                 "llm_judge": asdict(self.layer3) if self.layer3 is not None else None,
@@ -83,12 +86,16 @@ def _scan_one_tool(name: str, description: str, judge_fn: Optional[JudgeFn]) -> 
         if "prompt_injection" not in categories:
             categories.append("prompt_injection")
 
+    sorted_categories = sorted(categories)
+    match_ids = [m.id for m in layer1.matches if m.source == "heuristics"]
+
     return McpToolResult(
         name=name,
         flagged=risk_score >= FLAG_THRESHOLD,
         risk_score=min(100.0, risk_score),
-        categories=sorted(categories),
+        categories=sorted_categories,
         reasons=reasons,
+        owasp=owasp_tags_for(sorted_categories, match_ids),
         layer1=layer1,
         layer3=layer3,
     )

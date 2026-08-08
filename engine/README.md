@@ -12,6 +12,9 @@ Phase 1 (this doc's focus) builds the heuristics/regex layer:
   descriptions/metadata for hidden instructions (tool-poisoning attacks) by
   running each description through Layer 1, escalating to Layer 3 (LLM judge)
   only when Layer 1 is ambiguous
+- `owasp.py` — `owasp_ids_for(categories)` / `owasp_tags_for(categories, match_ids)`:
+  maps flagged categories to OWASP LLM Top 10 (2025) IDs for compliance/audit
+  reporting; wired into `mcp_tools.py`'s output today
 
 ## Adding a new rule
 

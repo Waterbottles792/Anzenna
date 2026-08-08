@@ -42,6 +42,8 @@ def test_hidden_instruction_tag_flags_tool():
     assert tool.flagged is True
     assert "prompt_injection" in tool.categories
     assert "exfiltration" in tool.categories
+    assert "LLM01" in tool.owasp["owasp_llm"]
+    assert tool.owasp["agentic_risk"] == ["agentic:tool_supply_chain_risk"]
 
 
 def test_critical_severity_match_skips_llm_judge():
@@ -118,8 +120,11 @@ def test_to_dict_shape():
     d = result.to_dict()
     assert set(d.keys()) == {"triggered", "flagged_tools", "tools"}
     tool_dict = d["tools"][0]
-    assert set(tool_dict.keys()) == {"name", "flagged", "risk_score", "categories", "reasons", "layer_results"}
+    assert set(tool_dict.keys()) == {
+        "name", "flagged", "risk_score", "categories", "reasons", "owasp", "layer_results",
+    }
     assert set(tool_dict["layer_results"].keys()) == {"heuristics", "llm_judge"}
+    assert tool_dict["owasp"] == {"owasp_llm": []}
 
 
 def test_no_crash_on_empty_tool_list():
