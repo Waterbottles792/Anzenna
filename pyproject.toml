@@ -10,7 +10,10 @@ dev = ["pytest>=8.0"]
 # Only needed to run real classifier inference (engine/classifier.py). The
 # test suite mocks inference and does not require these -- heavy/optional.
 ml = ["transformers>=4.40", "torch>=2.2"]
+# Only needed to actually run sdks/mcp/server.py as a server. The test suite
+# skips the server-registration tests when this isn't installed.
+mcp = ["mcp>=2.0"]
 
 [tool.pytest.ini_options]
-testpaths = ["engine", "api"]
+testpaths = ["engine", "api", "sdks"]
 pythonpath = ["."]

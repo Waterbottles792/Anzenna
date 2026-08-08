@@ -14,10 +14,12 @@ Phase 1 (this doc's focus) builds the heuristics/regex layer:
   `run_layer1(text, direction="input", context=None) -> Layer1Result`; passing
   `direction="output"` plus `context={"system_prompt": ...}` additionally
   runs the system-prompt-leak check
+- `scan_text.py` — `scan_text(text, direction=, context=, judge_fn=) -> TextScanResult`:
+  shared Layer 1 + Layer 3 escalation logic (Layer 3 only runs when Layer 1 is
+  ambiguous), plus OWASP tagging. Used by `mcp_tools.py` and `sdks/mcp/server.py`.
 - `mcp_tools.py` — `scan_mcp_tools(tools) -> McpScanResult`: scans MCP tool
   descriptions/metadata for hidden instructions (tool-poisoning attacks) by
-  running each description through Layer 1, escalating to Layer 3 (LLM judge)
-  only when Layer 1 is ambiguous
+  running each description through `scan_text()`
 - `owasp.py` — `owasp_ids_for(categories)` / `owasp_tags_for(categories, match_ids)`:
   maps flagged categories to OWASP LLM Top 10 (2025) IDs for compliance/audit
   reporting; wired into `mcp_tools.py`'s output today
