@@ -3,7 +3,7 @@
 Public entrypoint: run_layer3(text, context, judge_fn) -> Layer3Result
 
 Per docs/contracts/DETECTION_INTERFACE.md, the actual network-calling function
-is injectable via `judge_fn` (default: the real Anthropic-backed implementation)
+is injectable via `judge_fn` (default: the real Gemini-backed implementation)
 so callers/tests never need to hit the network. `judge_fn` is the abstraction
 point on its own -- no extra provider-abstraction layer sits on top of it.
 
@@ -26,7 +26,7 @@ JudgeFn = Callable[[str, Optional[dict]], str]
 
 # ponytail: env-driven knobs kept to what .env.example already declares, plus a
 # timeout that has to exist somewhere -- no config framework for two values.
-DEFAULT_MODEL = "claude-sonnet-5"
+DEFAULT_MODEL = "gemini-2.5-flash"
 DEFAULT_TIMEOUT_SECONDS = 10.0
 
 _JUDGE_SYSTEM_PROMPT = """\
@@ -120,14 +120,15 @@ def _cached_judge_call(judge_fn: JudgeFn, text: str, context_json: str) -> str:
 
 
 def _real_judge_fn(text: str, context: Optional[dict]) -> str:
-    """Default judge_fn: calls the Anthropic API. Imported lazily so importing
+    """Default judge_fn: calls the Gemini API. Imported lazily so importing
     this module (and running the mocked test suite) never requires the
-    `anthropic` package to be installed."""
-    import anthropic  # noqa: PLC0415 - intentional lazy import
+    `google-genai` package to be installed."""
+    from google import genai  # noqa: PLC0415 - intentional lazy import
+    from google.genai import types  # noqa: PLC0415 - intentional lazy import
 
     model = os.environ.get("LLM_JUDGE_MODEL", DEFAULT_MODEL)
-    timeout = float(os.environ.get("LLM_JUDGE_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS))
-    client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from env
+    timeout_ms = float(os.environ.get("LLM_JUDGE_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS)) * 1000
+    client = genai.Client(http_options=types.HttpOptions(timeout=timeout_ms))  # reads GEMINI_API_KEY from env
 
     system_prompt = (context or {}).get("system_prompt")
     user_parts = []
@@ -136,14 +137,16 @@ def _real_judge_fn(text: str, context: Optional[dict]) -> str:
     user_parts.append(f'Input: "{text}"\nOutput:')
     user_content = "\n".join(user_parts)
 
-    response = client.with_options(timeout=timeout).messages.create(
+    response = client.models.generate_content(
         model=model,
-        max_tokens=300,
-        output_config={"effort": "low"},
-        system=_JUDGE_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_content}],
+        contents=user_content,
+        config=types.GenerateContentConfig(
+            system_instruction=_JUDGE_SYSTEM_PROMPT,
+            max_output_tokens=300,
+            temperature=0,
+        ),
     )
-    return next((block.text for block in response.content if block.type == "text"), "")
+    return response.text or ""
 
 
 def run_layer3(

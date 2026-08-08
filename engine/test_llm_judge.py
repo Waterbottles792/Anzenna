@@ -1,7 +1,7 @@
 """Unit tests for engine/llm_judge.py.
 
 All tests pass a mocked `judge_fn` -- zero real network calls, zero API
-credits spent. Do not import `anthropic` or call `_real_judge_fn` here.
+credits spent. Do not import `google.genai` or call `_real_judge_fn` here.
 """
 
 from unittest.mock import Mock
