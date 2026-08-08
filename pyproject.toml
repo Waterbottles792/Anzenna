@@ -7,6 +7,9 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+# Only needed to run real classifier inference (engine/classifier.py). The
+# test suite mocks inference and does not require these -- heavy/optional.
+ml = ["transformers>=4.40", "torch>=2.2"]
 
 [tool.pytest.ini_options]
 testpaths = ["engine", "api"]
