@@ -23,6 +23,10 @@ Phase 1 (this doc's focus) builds the heuristics/regex layer:
 - `owasp.py` — `owasp_ids_for(categories)` / `owasp_tags_for(categories, match_ids)`:
   maps flagged categories to OWASP LLM Top 10 (2025) IDs for compliance/audit
   reporting; wired into `mcp_tools.py`'s output today
+- `pipeline.py` — Phase 5's `scan(text, direction, context=None) -> ScanResult`,
+  the one stable entrypoint `docs/contracts/DETECTION_INTERFACE.md` promises.
+  Combines Layers 1-3 with cost-controlled layer-skipping; see `SCORING.md`
+  for the formula and threshold rationale.
 
 ## Adding a new rule
 

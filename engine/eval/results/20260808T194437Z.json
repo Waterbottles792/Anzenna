@@ -1,0 +1,77 @@
+{
+  "total": 185,
+  "errors": [],
+  "confusion_matrix": {
+    "exfiltration": {
+      "benign": 21,
+      "pii_leak": 4
+    },
+    "jailbreak": {
+      "jailbreak": 8,
+      "benign": 26,
+      "prompt_injection": 1
+    },
+    "prompt_injection": {
+      "prompt_injection": 3,
+      "benign": 26,
+      "jailbreak": 2,
+      "exfiltration": 3,
+      "pii_leak": 1
+    },
+    "pii_leak": {
+      "pii_leak": 18,
+      "benign": 4,
+      "exfiltration": 3
+    },
+    "unknown_attack": {},
+    "benign": {
+      "benign": 61,
+      "prompt_injection": 2,
+      "exfiltration": 1,
+      "pii_leak": 1
+    }
+  },
+  "per_class": {
+    "benign": {
+      "precision": 0.442,
+      "recall": 0.9385,
+      "f1": 0.601,
+      "support": 65
+    },
+    "prompt_injection": {
+      "precision": 0.5,
+      "recall": 0.0857,
+      "f1": 0.1463,
+      "support": 35
+    },
+    "jailbreak": {
+      "precision": 0.8,
+      "recall": 0.2286,
+      "f1": 0.3556,
+      "support": 35
+    },
+    "pii_leak": {
+      "precision": 0.75,
+      "recall": 0.72,
+      "f1": 0.7347,
+      "support": 25
+    },
+    "exfiltration": {
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0,
+      "support": 25
+    }
+  },
+  "binary_attack_vs_benign": {
+    "tp": 43,
+    "fp": 4,
+    "fn": 77,
+    "tn": 61,
+    "precision": 0.9149,
+    "recall": 0.3583,
+    "f1": 0.515,
+    "accuracy": 0.5622
+  },
+  "accuracy": 0.4865
+}

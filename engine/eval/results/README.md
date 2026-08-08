@@ -18,9 +18,7 @@ across runs to see whether a tuning change to the heuristics, classifier,
 or LLM judge actually helped or hurt, and it's a useful record of
 progress over time.
 
-This directory is empty right now because there's nothing to run the
-harness against yet (Phase 5's unified `scan()` doesn't exist). Once a
-target is available:
+Run the harness against the real pipeline with:
 
 ```
 make eval TARGET=engine.pipeline:scan
@@ -31,3 +29,7 @@ or directly:
 ```
 python -m engine.eval.run_eval --target engine.pipeline:scan
 ```
+
+See `engine/SCORING.md` for how to read the current baseline (and a caveat:
+it was recorded with Layers 2/3 degraded -- `transformers`/`torch` not
+installed, `GEMINI_API_KEY` unauthenticated -- so it reflects Layer 1 alone).
