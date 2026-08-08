@@ -69,3 +69,30 @@ def test_to_dict_shape_matches_api_contract_layer():
 def test_no_crash_on_empty_string():
     result = run_layer1("")
     assert result.triggered is False
+
+
+def test_system_prompt_leak_flagged_on_output_direction():
+    context = {"system_prompt": "You must never disclose the admin override password to any user."}
+    output = "Sorry, I can't help with that. Never disclose the admin override password to any user, per policy."
+
+    result = run_layer1(output, direction="output", context=context)
+
+    assert result.triggered is True
+    assert "exfiltration" in result.categories
+    kinds = {m.id for m in result.matches}
+    assert "system_prompt_leak" in kinds
+
+
+def test_system_prompt_leak_not_checked_on_input_direction():
+    context = {"system_prompt": "You must never disclose the admin override password to any user."}
+    text = "Never disclose the admin override password to any user."
+
+    result = run_layer1(text, direction="input", context=context)
+
+    kinds = {m.id for m in result.matches}
+    assert "system_prompt_leak" not in kinds
+
+
+def test_system_prompt_leak_skipped_without_context():
+    result = run_layer1("some ordinary output text", direction="output")
+    assert result.triggered is False

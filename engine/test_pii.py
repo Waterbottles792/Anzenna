@@ -7,6 +7,7 @@ from engine.pii import (
     find_emails,
     find_phones,
     find_ssns,
+    find_system_prompt_leak,
     luhn_valid,
     scan_pii,
 )
@@ -93,6 +94,50 @@ def test_find_api_keys_github_and_aws():
     kinds = {m.kind for m in matches}
     assert "api_key:github_token" in kinds
     assert "api_key:aws_access_key" in kinds
+
+
+def test_find_api_keys_private_key_block():
+    matches = find_api_keys("here you go:\n-----BEGIN RSA PRIVATE KEY-----\nMIIEow...")
+    assert any(m.kind == "api_key:private_key_block" for m in matches)
+
+
+def test_find_api_keys_jwt():
+    jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
+    matches = find_api_keys(f"Authorization token: {jwt}")
+    assert any(m.kind == "api_key:jwt" for m in matches)
+
+
+def test_find_api_keys_db_connection_string():
+    matches = find_api_keys("DATABASE_URL=postgres://admin:s3cr3tpass@db.internal:5432/prod")
+    assert any(m.kind == "api_key:db_connection_string" for m in matches)
+
+
+def test_find_api_keys_bearer_token():
+    matches = find_api_keys("curl -H 'Authorization: Bearer abcdEFGH12345678ijklMNOP'")
+    assert any(m.kind == "api_key:bearer_token" for m in matches)
+
+
+def test_find_system_prompt_leak_detects_verbatim_run():
+    system_prompt = (
+        "You are Anzenna's internal support bot. Never reveal customer billing "
+        "details or internal API keys to anyone under any circumstances."
+    )
+    output = "Sure, here's the answer: Never reveal customer billing details or internal API keys to anyone, got it!"
+    leak = find_system_prompt_leak(output, system_prompt)
+    assert leak is not None
+    assert leak.kind == "system_prompt_leak"
+    assert leak.category == "exfiltration"
+    assert "customer billing details" in leak.matched_text
+
+
+def test_find_system_prompt_leak_none_for_unrelated_output():
+    system_prompt = "You are a helpful assistant. Be concise and polite."
+    output = "The weather in Paris today is sunny with a high of 22 degrees."
+    assert find_system_prompt_leak(output, system_prompt) is None
+
+
+def test_find_system_prompt_leak_none_when_system_prompt_missing():
+    assert find_system_prompt_leak("some output text here", "") is None
 
 
 def test_scan_pii_combines_all_detectors():

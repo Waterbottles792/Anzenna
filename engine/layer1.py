@@ -13,10 +13,11 @@ DETECTION_INTERFACE.md.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from typing import Optional
 
 from engine.encoding import scan_encoding
 from engine.heuristics import SEVERITY_WEIGHTS, match_text
-from engine.pii import scan_pii
+from engine.pii import find_system_prompt_leak, scan_pii
 
 
 @dataclass(frozen=True)
@@ -56,8 +57,14 @@ class Layer1Result:
         }
 
 
-def run_layer1(text: str) -> Layer1Result:
+def run_layer1(text: str, direction: str = "input", context: Optional[dict] = None) -> Layer1Result:
     """Run every Layer 1 detector (regex rules, PII/secrets, encoding tricks) over text.
+
+    `direction`/`context` mirror the eventual scan() signature in
+    docs/contracts/DETECTION_INTERFACE.md. Everything below runs regardless of
+    direction; the one direction-gated addition is system-prompt-leak
+    detection, which only makes sense on `direction == "output"` and only
+    when `context["system_prompt"]` is available to compare against.
 
     Score is a simple sum of each match's severity weight, capped at 100.
     That's intentionally simple: this is one layer's preliminary contribution,
@@ -74,6 +81,13 @@ def run_layer1(text: str) -> Layer1Result:
         matches.append(
             Layer1Match("pii", pm.kind, pm.category, pm.severity, f"Detected {pm.kind}", pm.matched_text)
         )
+
+    if direction == "output" and context and context.get("system_prompt"):
+        leak = find_system_prompt_leak(text, context["system_prompt"])
+        if leak is not None:
+            matches.append(
+                Layer1Match("pii", leak.kind, leak.category, leak.severity, f"Detected {leak.kind}", leak.matched_text)
+            )
 
     for ef in scan_encoding(text):
         matches.append(

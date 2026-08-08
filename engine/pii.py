@@ -3,10 +3,17 @@
 Credit cards use a real Luhn checksum on top of the digit-count regex — a bare
 "13-19 digit run" regex alone flags far too many false positives (order numbers,
 tracking numbers, phone numbers, etc.).
+
+These detectors are direction-agnostic (a leaked SSN is a leak whether it's in
+the user's input or the model's output) and are run on both by
+engine.layer1.run_layer1. `find_system_prompt_leak` below is the one detector
+that's genuinely output-only -- it has nothing to compare against on the input
+side, since a system prompt can only "leak" from an output.
 """
 
 from __future__ import annotations
 
+import difflib
 import re
 from dataclasses import dataclass
 
@@ -33,6 +40,13 @@ API_KEY_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("slack_token", re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b")),
     ("google_api_key", re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b")),
     ("stripe_key", re.compile(r"\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\b")),
+    # Not vendor-specific, but the same "secret material" bucket -- these are
+    # the shapes most likely to leak in a model *output* (echoed from tool
+    # results, retrieved docs, or training data) rather than typed by a user.
+    ("private_key_block", re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----")),
+    ("jwt", re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b")),
+    ("db_connection_string", re.compile(r"\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis)://[^\s:@/]+:[^\s@/]+@[^\s/]+")),
+    ("bearer_token", re.compile(r"\bBearer\s+[A-Za-z0-9._-]{20,}\b")),
 ]
 
 
@@ -85,6 +99,33 @@ def find_api_keys(text: str) -> list[PIIMatch]:
         for m in pattern.finditer(text):
             matches.append(PIIMatch(f"api_key:{name}", "exfiltration", "critical", m.group(0)))
     return matches
+
+
+def find_system_prompt_leak(output_text: str, system_prompt: str, min_words: int = 6) -> PIIMatch | None:
+    """Flag a model output that reproduces a long verbatim run of words from
+    the application's own system prompt -- the output-side counterpart to the
+    input-side "print your system prompt" heuristic rules.
+
+    Uses difflib's longest-matching-block on word tokens rather than a
+    substring/regex check, so paraphrased or reformatted leaks (extra
+    whitespace, a word or two changed) still line up on the surrounding
+    unchanged run of words.
+    ponytail: word-level difflib, fine for typical system-prompt/response
+    sizes (hundreds to low-thousands of words); switch to a rolling hash if
+    this ever needs to scale to megabyte-sized transcripts.
+    """
+    if not output_text or not system_prompt:
+        return None
+
+    sys_words = system_prompt.split()
+    out_words = output_text.split()
+    matcher = difflib.SequenceMatcher(None, sys_words, out_words, autojunk=False)
+    match = matcher.find_longest_match(0, len(sys_words), 0, len(out_words))
+    if match.size < min_words:
+        return None
+
+    leaked = " ".join(out_words[match.b : match.b + match.size])
+    return PIIMatch("system_prompt_leak", "exfiltration", "critical", leaked)
 
 
 def scan_pii(text: str) -> list[PIIMatch]:

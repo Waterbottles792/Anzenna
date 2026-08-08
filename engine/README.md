@@ -5,9 +5,15 @@ Phase 1 (this doc's focus) builds the heuristics/regex layer:
 
 - `rules/jailbreak_phrases.yaml` — the ruleset (pattern -> category -> severity)
 - `heuristics.py` — loads the ruleset and matches text against it
-- `pii.py` — email/phone/SSN/credit-card (Luhn-validated)/API-key detectors
+- `pii.py` — email/phone/SSN/credit-card (Luhn-validated)/API-key & secret
+  detectors (also JWTs, PEM private keys, DB connection strings, bearer
+  tokens), plus `find_system_prompt_leak()` — an output-only DLP check that
+  flags a response reproducing a long verbatim run of the app's system prompt
 - `encoding.py` — base64 decode+rescan, zero-width chars, homoglyphs, char density
-- `layer1.py` — combines all of the above into `run_layer1(text) -> Layer1Result`
+- `layer1.py` — combines all of the above into
+  `run_layer1(text, direction="input", context=None) -> Layer1Result`; passing
+  `direction="output"` plus `context={"system_prompt": ...}` additionally
+  runs the system-prompt-leak check
 - `mcp_tools.py` — `scan_mcp_tools(tools) -> McpScanResult`: scans MCP tool
   descriptions/metadata for hidden instructions (tool-poisoning attacks) by
   running each description through Layer 1, escalating to Layer 3 (LLM judge)
@@ -43,7 +49,7 @@ Notes:
 
 ## Layer1Result shape
 
-`run_layer1(text)` returns a `Layer1Result` with `triggered`, `categories`,
+`run_layer1(text, direction="input", context=None)` returns a `Layer1Result` with `triggered`, `categories`,
 `matches`, `score` (0-100, this layer's contribution), and `reasons`. Its
 `to_dict()` maps onto the `layer_results.heuristics` field described in
 `docs/contracts/API_CONTRACT.md` — Phase 5 folds this (plus Layers 2/3) into
