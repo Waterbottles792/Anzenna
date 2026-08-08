@@ -13,3 +13,4 @@ ml = ["transformers>=4.40", "torch>=2.2"]
 
 [tool.pytest.ini_options]
 testpaths = ["engine", "api"]
+pythonpath = ["."]
