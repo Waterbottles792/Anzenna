@@ -235,7 +235,46 @@ rules:
     pattern: '\bsudo\b.{0,20}\b(dump|print|show)\b.{0,20}\bprompt\b'
     description: "Fake 'sudo' privilege escalation framing to force a prompt dump"
 
+  # ---------------------------------------------------------------------
+  # tool_poisoning: hidden instructions embedded in MCP tool descriptions/
+  # metadata, meant to be invisible to the human but read (and obeyed) by
+  # the model when it sees the tool list. Reuses prompt_injection/
+  # exfiltration categories -- this is the same "hidden adversarial
+  # instruction" problem, just in tool metadata instead of chat text.
+  # Sources: Invariant Labs "MCP Security Notification: Tool Poisoning
+  # Attacks" writeup and its example payloads.
+  # ---------------------------------------------------------------------
+  - id: tool_desc_hidden_instruction_tag
+    category: prompt_injection
+    severity: high
+    pattern: '<\s*(important|system|hidden|secret)\s*>'
+    description: "Hidden instruction tag embedded in tool metadata (MCP tool-poisoning pattern)"
+
+  - id: tool_desc_hide_from_user
+    category: exfiltration
+    severity: high
+    pattern: '\b(do\s+not|don.?t)\s+(tell|mention|inform|show)\s+(the\s+)?user\b'
+    description: "Instructs the model to hide an action from the user (MCP tool-poisoning pattern)"
+
+  - id: tool_desc_read_file_and_pass_content
+    category: exfiltration
+    severity: critical
+    pattern: '\b(read|open)\s+(the\s+)?file\b.{0,60}\bpass\b.{0,20}\b(content|contents)\b'
+    description: "Instructs the model to read a local file and smuggle its contents through a tool call (MCP tool-poisoning pattern)"
+
+  - id: tool_desc_otherwise_wont_work
+    category: prompt_injection
+    severity: medium
+    pattern: '\botherwise\b.{0,20}\b(tool|it)\s+(will\s+not|won.?t)\s+work\b'
+    description: "Coercive framing claiming the tool won't work unless a hidden instruction is followed (MCP tool-poisoning pattern)"
+
+  - id: tool_desc_shadow_other_tools
+    category: prompt_injection
+    severity: medium
+    pattern: '\balways\s+use\s+this\s+tool\s+instead\s+of\b'
+    description: "Tries to shadow/override another tool in the model's tool selection (MCP tool-poisoning pattern)"
+
 rule_count_note: >
-  35 patterns total across prompt_injection, jailbreak, and exfiltration as of
-  the Phase 1 seed. Extend as new public jailbreak collections surface new
-  patterns worth adding.
+  40 patterns total across prompt_injection, jailbreak, and exfiltration as of
+  the Phase 1 seed plus the tool_poisoning additions. Extend as new public
+  jailbreak/tool-poisoning collections surface new patterns worth adding.

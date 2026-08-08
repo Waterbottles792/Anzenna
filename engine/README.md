@@ -8,6 +8,10 @@ Phase 1 (this doc's focus) builds the heuristics/regex layer:
 - `pii.py` — email/phone/SSN/credit-card (Luhn-validated)/API-key detectors
 - `encoding.py` — base64 decode+rescan, zero-width chars, homoglyphs, char density
 - `layer1.py` — combines all of the above into `run_layer1(text) -> Layer1Result`
+- `mcp_tools.py` — `scan_mcp_tools(tools) -> McpScanResult`: scans MCP tool
+  descriptions/metadata for hidden instructions (tool-poisoning attacks) by
+  running each description through Layer 1, escalating to Layer 3 (LLM judge)
+  only when Layer 1 is ambiguous
 
 ## Adding a new rule
 
