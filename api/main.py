@@ -25,7 +25,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from api import db
+from api import billing, db
 from engine.pipeline import scan as engine_scan
 
 app = FastAPI(title="Anzenna API")
@@ -178,6 +178,65 @@ def get_usage(
         "limit": limit,
         "period_start": period_start.isoformat(),
     }
+
+
+@app.post("/v1/billing/checkout")
+async def post_billing_checkout(
+    request: Request,
+    session: Session = Depends(get_session),
+    auth: AuthedKey = Depends(require_api_key),
+):
+    """Not part of docs/contracts/API_CONTRACT.md (frozen since Phase 0) --
+    a Phase 8 addition, same as engine/owasp.py's tags were a Phase-5+
+    addition beyond the original engine contract. Reuses API-key auth since
+    no session-auth dashboard exists yet (Phase 9); switch this to session
+    auth once it does, since a checkout link is normally a logged-in-user
+    action, not a server-to-server one."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="malformed JSON body")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="malformed JSON body")
+
+    plan = body.get("plan")
+    success_url = body.get("success_url")
+    cancel_url = body.get("cancel_url")
+    if plan not in ("pro", "scale"):
+        raise HTTPException(status_code=400, detail="'plan' must be 'pro' or 'scale'")
+    if not isinstance(success_url, str) or not isinstance(cancel_url, str) or not success_url or not cancel_url:
+        raise HTTPException(status_code=400, detail="'success_url' and 'cancel_url' are required")
+
+    org = db.get_org(session, auth.org_id)
+    assert org is not None  # FK guarantees this
+    try:
+        checkout_url = billing.create_checkout_session(
+            session,
+            auth.org_id,
+            org_name=org.name,
+            plan=plan,
+            success_url=success_url,
+            cancel_url=cancel_url,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"checkout_url": checkout_url}
+
+
+@app.post("/webhooks/stripe")
+async def stripe_webhook(request: Request, session: Session = Depends(get_session)):
+    import stripe  # heavy/optional (Phase 8's `billing` extra) -- lazy import
+
+    payload = await request.body()
+    try:
+        event = stripe.Webhook.construct_event(
+            payload, request.headers.get("stripe-signature", ""), os.environ["STRIPE_WEBHOOK_SECRET"]
+        )
+    except Exception:
+        raise HTTPException(status_code=400, detail="invalid webhook signature")
+
+    billing.handle_webhook_event(session, event)
+    return {"received": True}
 
 
 @app.exception_handler(Exception)

@@ -17,6 +17,7 @@ from sqlalchemy import create_engine
 
 pytest.importorskip("sqlalchemy")
 pytest.importorskip("fastapi")
+pytest.importorskip("stripe")
 
 DATABASE_URL = os.environ.get("ANZENNA_TEST_DATABASE_URL") or os.environ.get("DATABASE_URL")
 if not DATABASE_URL:
@@ -29,7 +30,7 @@ if not DATABASE_URL:
 from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy.orm import Session  # noqa: E402
 
-from api import db, main  # noqa: E402
+from api import billing, db, main  # noqa: E402
 from engine.pipeline import ScanResult  # noqa: E402
 
 FAKE_ALLOW = ScanResult(
@@ -172,3 +173,68 @@ def test_usage_endpoint_reflects_scan_count(client, session, org, api_key, raw_k
     body = resp.json()
     assert body["usage"] == 3
     assert body["limit"] == main.PLAN_LIMITS["free"]
+
+
+# --- Phase 8: billing --------------------------------------------------
+
+def test_billing_checkout_requires_auth(client):
+    resp = client.post(
+        "/v1/billing/checkout", json={"plan": "pro", "success_url": "https://a", "cancel_url": "https://b"}
+    )
+    assert resp.status_code == 401
+
+
+def test_billing_checkout_invalid_plan_is_400(client, api_key, raw_key):
+    resp = client.post(
+        "/v1/billing/checkout",
+        json={"plan": "ultra", "success_url": "https://a", "cancel_url": "https://b"},
+        headers=auth(raw_key),
+    )
+    assert resp.status_code == 400
+
+
+def test_billing_checkout_missing_urls_is_400(client, api_key, raw_key):
+    resp = client.post("/v1/billing/checkout", json={"plan": "pro"}, headers=auth(raw_key))
+    assert resp.status_code == 400
+
+
+def test_billing_checkout_success_returns_url(client, api_key, raw_key, monkeypatch):
+    monkeypatch.setattr(billing, "create_checkout_session", lambda *a, **k: "https://checkout.stripe.com/fake")
+    resp = client.post(
+        "/v1/billing/checkout",
+        json={"plan": "pro", "success_url": "https://a", "cancel_url": "https://b"},
+        headers=auth(raw_key),
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"checkout_url": "https://checkout.stripe.com/fake"}
+
+
+def test_billing_checkout_unconfigured_plan_returns_400(client, api_key, raw_key, monkeypatch):
+    def _raise(*a, **k):
+        raise ValueError("unknown or unconfigured plan: 'pro'")
+
+    monkeypatch.setattr(billing, "create_checkout_session", _raise)
+    resp = client.post(
+        "/v1/billing/checkout",
+        json={"plan": "pro", "success_url": "https://a", "cancel_url": "https://b"},
+        headers=auth(raw_key),
+    )
+    assert resp.status_code == 400
+
+
+def test_stripe_webhook_invalid_signature_is_400(client):
+    resp = client.post("/webhooks/stripe", content=b"{}", headers={"stripe-signature": "bad"})
+    assert resp.status_code == 400
+
+
+def test_stripe_webhook_valid_event_applies_and_returns_200(client, session, org, monkeypatch):
+    import stripe
+
+    db.set_org_stripe_customer_id(session, org.id, "cus_test1")
+    fake_event = {"type": "customer.subscription.deleted", "data": {"object": {"customer": "cus_test1"}}}
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_test")
+    monkeypatch.setattr(stripe.Webhook, "construct_event", lambda *a, **k: fake_event)
+
+    resp = client.post("/webhooks/stripe", content=b"{}", headers={"stripe-signature": "sig"})
+    assert resp.status_code == 200
+    assert db.get_org(session, org.id).plan == "free"
