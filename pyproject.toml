@@ -19,6 +19,10 @@ db = ["sqlalchemy>=2.0", "alembic>=1.13", "psycopg[binary]>=3.1"]
 # api/main.py (Phase 7). Requires the `db` extra too. api/test_main.py skips
 # itself under the same conditions as api/test_db.py.
 api = ["fastapi>=0.110", "uvicorn>=0.29"]
+# api/billing.py (Phase 8). Requires the `db` extra too. api/test_billing.py
+# mocks the Stripe SDK, so it never needs a real Stripe account -- same skip
+# condition as api/test_db.py for the Postgres side.
+billing = ["stripe>=9"]
 
 [tool.pytest.ini_options]
 testpaths = ["engine", "api", "sdks"]
