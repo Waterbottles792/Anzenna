@@ -1,59 +1,69 @@
-"""Phase 8 -- Stripe billing.
+"""Phase 8 -- Dodo Payments billing (Merchant of Record).
 
-Metered pro/scale tiers on top of Phase 6/7's orgs.plan and usage_counters.
-No live Stripe account is available in this dev environment, so every call
-into the SDK goes through an injectable `stripe_module` parameter (default:
-the real `stripe` package, lazily imported) -- the same pattern
-engine/llm_judge.py uses for its judge_fn. That makes this module fully
-unit-testable against fake responses with zero network calls, and the real
-SDK is swapped in unmodified in production.
+Swapped from Stripe: Stripe went invite-only for India-based businesses in
+May 2024, so a Stripe account isn't obtainable here. Dodo Payments is a
+Merchant of Record aimed at India-based SaaS founders selling globally --
+it also handles VAT/GST/sales-tax compliance itself, unlike Stripe.
 
-Price IDs come from env (STRIPE_PRICE_ID_PRO/STRIPE_PRICE_ID_SCALE, see
-.env.example) rather than being created here -- creating the actual Stripe
-products/prices is a one-time dashboard/CLI action (see api/README.md), not
-something this module should do at import time.
+No live Dodo Payments account is available in this dev environment, so
+every call into the SDK goes through an injectable `client` parameter
+(default: the real `dodopayments.DodoPayments`, lazily constructed) -- same
+pattern engine/llm_judge.py uses for its judge_fn. That makes this module
+fully unit-testable against a fake client with zero network calls.
+
+Product ids come from env (DODO_PRODUCT_ID_PRO/DODO_PRODUCT_ID_SCALE, see
+.env.example) rather than being created here -- creating the actual Dodo
+products is a one-time dashboard action (see api/README.md), not something
+this module should do at import time.
 """
 
 from __future__ import annotations
 
 import os
 import uuid
-from datetime import date
 from typing import Optional
 
 from sqlalchemy.orm import Session
 
 from api import db
 
-PLAN_PRICE_IDS = {
-    "pro": os.environ.get("STRIPE_PRICE_ID_PRO", ""),
-    "scale": os.environ.get("STRIPE_PRICE_ID_SCALE", ""),
+PLAN_PRODUCT_IDS = {
+    "pro": os.environ.get("DODO_PRODUCT_ID_PRO", ""),
+    "scale": os.environ.get("DODO_PRODUCT_ID_SCALE", ""),
 }
-_PRICE_ID_TO_PLAN = {v: k for k, v in PLAN_PRICE_IDS.items() if v}
-
-# Subscription statuses that count as "paying" -- a trialing subscription
-# already has a plan+price attached even before the first invoice.
-_ACTIVE_STATUSES = {"active", "trialing"}
+_PRODUCT_ID_TO_PLAN = {v: k for k, v in PLAN_PRODUCT_IDS.items() if v}
 
 
-def _stripe_module():
-    import stripe  # heavy/optional (Phase 8's `billing` extra) -- lazy import
+def dodo_client():
+    """Real client factory -- also used by api/main.py's webhook route
+    (needs `.webhooks.unwrap()`), not just the functions in this module."""
+    from dodopayments import DodoPayments  # heavy/optional (Phase 8's `billing` extra) -- lazy import
 
-    stripe.api_key = os.environ["STRIPE_SECRET_KEY"]
-    return stripe
+    return DodoPayments(
+        bearer_token=os.environ.get("DODO_PAYMENTS_API_KEY"),
+        webhook_key=os.environ.get("DODO_PAYMENTS_WEBHOOK_KEY"),
+        environment=os.environ.get("DODO_PAYMENTS_ENVIRONMENT", "live_mode"),
+    )
 
 
-def ensure_stripe_customer(session: Session, org_id: uuid.UUID, *, org_name: str, stripe_module=None) -> str:
-    """Create+persist a Stripe customer for `org_id` if it doesn't have one
-    yet. Idempotent: returns the existing id with no API call if already set."""
+def ensure_dodo_customer(session: Session, org_id: uuid.UUID, *, org_name: str, email: str, client=None) -> str:
+    """Create+persist a Dodo Payments customer for `org_id` if it doesn't
+    have one yet. Idempotent: returns the existing id with no API call if
+    already set.
+
+    Persisted into orgs.stripe_customer_id -- that column name is frozen
+    (DB_SCHEMA.sql is a contract that "never changes after Phase 0" per
+    docs/plan.md), and adding a near-duplicate column just to rename one
+    string field would be pure churn.
+    """
     org = db.get_org(session, org_id)
     assert org is not None
     if org.stripe_customer_id:
         return org.stripe_customer_id
-    stripe_module = stripe_module or _stripe_module()
-    customer = stripe_module.Customer.create(name=org_name, metadata={"org_id": str(org_id)})
-    db.set_org_stripe_customer_id(session, org_id, customer.id)
-    return customer.id
+    client = client or dodo_client()
+    customer = client.customers.create(email=email, name=org_name)
+    db.set_org_stripe_customer_id(session, org_id, customer.customer_id)
+    return customer.customer_id
 
 
 def create_checkout_session(
@@ -61,106 +71,92 @@ def create_checkout_session(
     org_id: uuid.UUID,
     *,
     org_name: str,
+    email: str,
     plan: str,
-    success_url: str,
+    return_url: str,
     cancel_url: str,
-    stripe_module=None,
+    client=None,
 ) -> str:
-    """Create a Stripe Checkout session upgrading `org_id` to `plan`
+    """Create a Dodo Payments checkout session upgrading `org_id` to `plan`
     (pro|scale) and return its hosted checkout URL."""
-    if plan not in PLAN_PRICE_IDS or not PLAN_PRICE_IDS[plan]:
+    if plan not in PLAN_PRODUCT_IDS or not PLAN_PRODUCT_IDS[plan]:
         raise ValueError(f"unknown or unconfigured plan: {plan!r}")
-    stripe_module = stripe_module or _stripe_module()
-    customer_id = ensure_stripe_customer(session, org_id, org_name=org_name, stripe_module=stripe_module)
-    checkout_session = stripe_module.checkout.Session.create(
-        customer=customer_id,
-        mode="subscription",
-        line_items=[{"price": PLAN_PRICE_IDS[plan], "quantity": 1}],
-        success_url=success_url,
+    client = client or dodo_client()
+    customer_id = ensure_dodo_customer(session, org_id, org_name=org_name, email=email, client=client)
+    checkout = client.checkout_sessions.create(
+        customer={"customer_id": customer_id},
+        product_cart=[{"product_id": PLAN_PRODUCT_IDS[plan], "quantity": 1}],
+        return_url=return_url,
         cancel_url=cancel_url,
         metadata={"org_id": str(org_id), "plan": plan},
     )
-    return checkout_session.url
+    return checkout.checkout_url
 
 
-def _find_metered_subscription_item(stripe_module, customer_id: str) -> Optional[str]:
-    subs = stripe_module.Subscription.list(customer=customer_id, status="active", limit=1)
-    if not subs.data:
-        return None
-    for item in subs.data[0]["items"]["data"]:
-        if item["price"]["id"] in _PRICE_ID_TO_PLAN:
-            return item["id"]
-    return None
+def report_scan_usage(session: Session, org_id: uuid.UUID, scan_log_id: uuid.UUID, *, client=None) -> bool:
+    """Report one scan as a usage event for metered pro/scale billing.
+    Called by api/main.py right after logging a scan.
 
-
-def report_usage(session: Session, org_id: uuid.UUID, period_start: date, *, stripe_module=None) -> Optional[int]:
-    """Report this period's scan_count to Stripe as a metered usage record
-    against the org's active subscription item (plan.md Phase 8 task 2).
-    Returns None (no-op) for orgs with no Stripe customer or no active
-    metered subscription item -- free-plan orgs have neither."""
+    Dodo's usage-events API ingests one event per unit of usage (deduped by
+    `event_id`), unlike Stripe's usage records which `set` a period's
+    cumulative total -- so this fires per scan rather than the daily-batch
+    design a Stripe-shaped API would use. No-ops (returns False) for orgs
+    with no Dodo customer (free plan) -- checked before touching the
+    client, so free-plan scans never need Dodo credentials configured.
+    Never raises: a billing hiccup must never fail the customer's actual
+    scan response.
+    """
     org = db.get_org(session, org_id)
     if org is None or not org.stripe_customer_id:
-        return None
-    stripe_module = stripe_module or _stripe_module()
-    item_id = _find_metered_subscription_item(stripe_module, org.stripe_customer_id)
-    if item_id is None:
-        return None
-    quantity = db.get_usage(session, org_id, period_start)
-    stripe_module.SubscriptionItem.create_usage_record(item_id, quantity=quantity, action="set")
-    return quantity
+        return False
+    client = client or dodo_client()
+    try:
+        client.usage_events.ingest(
+            events=[
+                {
+                    "customer_id": org.stripe_customer_id,
+                    "event_id": str(scan_log_id),
+                    "event_name": "scan",
+                }
+            ]
+        )
+    except Exception:
+        return False
+    return True
 
 
-def report_usage_for_all_orgs(session: Session, period_start: date, *, stripe_module=None) -> dict[uuid.UUID, int]:
-    """The "daily batch job reading usage_counters" plan.md Phase 8 task 2
-    describes. Intentionally just a function to call from a scheduler (cron,
-    a platform's scheduled-task feature, ...) -- provisioning that scheduler
-    is an infra/deploy concern (plan.md Phase 12), not billing logic."""
-    stripe_module = stripe_module or _stripe_module()
-    reported = {}
-    for org in db.list_orgs_with_stripe_customer(session):
-        quantity = report_usage(session, org.id, period_start, stripe_module=stripe_module)
-        if quantity is not None:
-            reported[org.id] = quantity
-    return reported
+def _plan_for_subscription(subscription: dict) -> Optional[str]:
+    return _PRODUCT_ID_TO_PLAN.get(subscription.get("product_id"))
 
 
-def _plan_for_subscription(subscription_obj) -> Optional[str]:
-    for item in subscription_obj.get("items", {}).get("data", []):
-        price_id = item.get("price", {}).get("id")
-        if price_id in _PRICE_ID_TO_PLAN:
-            return _PRICE_ID_TO_PLAN[price_id]
-    return None
+def handle_webhook_event(session: Session, event: dict) -> None:
+    """Apply one Dodo Payments webhook event (already signature-verified by
+    the caller -- see api/main.py's POST /webhooks/dodo-payments) to
+    orgs.plan. `event` is the SDK's parsed event dict (`.model_dump()`'d):
+    `{"type": "subscription.<x>", "data": {...Subscription fields...}, ...}`.
 
-
-def handle_webhook_event(session: Session, event) -> None:
-    """Apply one Stripe webhook event (already signature-verified by the
-    caller -- see api/main.py's POST /webhooks/stripe) to orgs.plan.
-
-    subscription created/updated -> plan derived from the subscription's
-    price id, applied while active/trialing; downgraded to free otherwise
-    (e.g. past_due, unpaid).
-    subscription deleted (canceled) -> downgrade to free.
-    Other event types (invoice.payment_failed, etc.) are accepted and
-    ignored -- DB_SCHEMA.sql's orgs table has no status column to record
-    them in (it's a frozen contract per docs/plan.md); Stripe's own
-    dashboard/dunning emails are the source of truth for those until a
-    status column exists.
+    Every subscription.* event type (active/renewed/updated/plan_changed/
+    cancelled/expired/failed/on_hold) carries the subscription's current
+    `status` in `data` -- so status, not event type, decides the plan:
+    "active" -> plan derived from the subscription's product id; anything
+    else -> downgrade to free. Non-subscription events (payment.*,
+    refund.*, ...) are accepted and ignored -- DB_SCHEMA.sql's orgs table
+    has no status column to record them in (frozen contract).
     """
     event_type = event.get("type", "")
-    obj = event.get("data", {}).get("object", {})
-    customer_id = obj.get("customer")
+    if not event_type.startswith("subscription."):
+        return
+    subscription = event.get("data", {})
+    customer_id = (subscription.get("customer") or {}).get("customer_id")
     if not customer_id:
         return
     org = db.get_org_by_stripe_customer_id(session, customer_id)
     if org is None:
         return
 
-    if event_type in ("customer.subscription.created", "customer.subscription.updated"):
-        if obj.get("status") in _ACTIVE_STATUSES:
-            plan = _plan_for_subscription(obj)
-            if plan is not None:
-                db.set_org_plan(session, org.id, plan)
-        else:
-            db.set_org_plan(session, org.id, "free")
-    elif event_type == "customer.subscription.deleted":
+    if subscription.get("status") == "active":
+        plan = _plan_for_subscription(subscription)
+        if plan is not None:
+            db.set_org_plan(session, org.id, plan)
+    else:
         db.set_org_plan(session, org.id, "free")

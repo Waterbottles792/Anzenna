@@ -34,6 +34,6 @@ jobs:
       # package -- setuptools' flat-layout auto-discovery refuses to build
       # it. Tests resolve imports via pytest's `pythonpath = ["."]` (see
       # pyproject.toml) instead, so just install the actual dependencies.
-      - run: pip install pytest PyYAML google-genai "mcp>=2.0" "sqlalchemy>=2.0" "alembic>=1.13" "psycopg[binary]>=3.1" "fastapi>=0.110" httpx "stripe>=9"
+      - run: pip install pytest PyYAML google-genai "mcp>=2.0" "sqlalchemy>=2.0" "alembic>=1.13" "psycopg[binary]>=3.1" "fastapi>=0.110" httpx "dodopayments[webhooks]>=1.0"
       - run: alembic upgrade head
       - run: pytest

@@ -19,35 +19,46 @@ SQLAlchemy models + CRUD helpers against `docs/contracts/DB_SCHEMA.sql`
   session-auth dashboard endpoints (`/v1/keys`, `/v1/logs`) aren't here yet;
   they need Phase 9's auth provider first. Also hosts the Phase 8 billing
   routes below, which aren't part of `API_CONTRACT.md`.
-- `billing.py` — Stripe: `ensure_stripe_customer`/`create_checkout_session`
-  (org upgrade flow), `report_usage`/`report_usage_for_all_orgs` (metered
-  usage records, call the batch variant from a scheduler -- provisioning
-  that scheduler is a Phase 12 infra concern, not this module's job), and
-  `handle_webhook_event` (applies subscription created/updated/deleted
-  events to `orgs.plan`). Every Stripe SDK call takes an injectable
-  `stripe_module` param, so `test_billing.py` runs against a mocked SDK with
-  zero network calls -- no live Stripe account needed to develop or test
-  this. `main.py` exposes it as `POST /v1/billing/checkout` and
-  `POST /webhooks/stripe`.
+- `billing.py` — Dodo Payments (a Merchant of Record, not a raw payment
+  processor -- it handles VAT/GST/sales-tax compliance itself; used instead
+  of Stripe because Stripe has been invite-only for India-based businesses
+  since May 2024): `ensure_dodo_customer`/`create_checkout_session` (org
+  upgrade flow), `report_scan_usage` (one metered usage event per scan,
+  called from `main.py` right after each scan is logged -- Dodo's
+  usage-events API ingests per-unit events deduped by id, unlike Stripe's
+  usage records which `set` a period's cumulative total, so there's no
+  daily batch job here), and `handle_webhook_event` (applies subscription
+  webhook events to `orgs.plan`, keyed off the subscription's `status`
+  field so every event type -- active/renewed/cancelled/on_hold/... -- is
+  handled the same way). Every Dodo SDK call takes an injectable `client`
+  param, so `test_billing.py` runs against a mocked SDK with zero network
+  calls -- no live Dodo account needed to develop or test this. `main.py`
+  exposes it as `POST /v1/billing/checkout` and `POST /webhooks/dodo-payments`.
+  The Dodo customer id is persisted into `orgs.stripe_customer_id` -- that
+  column name is frozen (`DB_SCHEMA.sql`'s a contract), reused rather than
+  added to.
 
 Requires the `db`, `api`, and `billing` extras: `pip install -e ".[db,api,billing]"`
-(installs SQLAlchemy, Alembic, `psycopg`, FastAPI, Uvicorn, `stripe`).
+(installs SQLAlchemy, Alembic, `psycopg`, FastAPI, Uvicorn, `dodopayments`).
 
-### Going live with real Stripe
+### Going live with real Dodo Payments
 
-Nothing in this repo talks to a real Stripe account -- `billing.py` is built
-and tested entirely against a mocked SDK. To actually take payments:
+Nothing in this repo talks to a real Dodo Payments account -- `billing.py`
+is built and tested entirely against a mocked SDK. To actually take
+payments:
 
-1. In the Stripe dashboard (test mode first), create two recurring metered
-   prices, one for `pro` and one for `scale`. Set their ids as
-   `STRIPE_PRICE_ID_PRO`/`STRIPE_PRICE_ID_SCALE` (see `.env.example`).
-2. Set `STRIPE_SECRET_KEY` (dashboard) and `STRIPE_WEBHOOK_SECRET` (from
-   `stripe listen --forward-to localhost:8000/webhooks/stripe`, or the
-   dashboard once a production endpoint exists).
-3. Forward webhooks locally with the Stripe CLI (`stripe listen ...` above)
-   while testing a real checkout in test mode.
-4. Point a scheduler at `billing.report_usage_for_all_orgs(session, period_start)`
-   once a day, per plan.md's Phase 8 task 2.
+1. In the Dodo Payments dashboard (test mode first), create two products,
+   one for `pro` and one for `scale`, with a usage-based/metered price tied
+   to a "scan" meter. Set their ids as `DODO_PRODUCT_ID_PRO`/
+   `DODO_PRODUCT_ID_SCALE` (see `.env.example`).
+2. Set `DODO_PAYMENTS_API_KEY` and `DODO_PAYMENTS_WEBHOOK_KEY` (dashboard),
+   and `DODO_PAYMENTS_ENVIRONMENT=test_mode` while testing.
+3. Point the dashboard's webhook endpoint at
+   `POST /webhooks/dodo-payments` for the subscription events, or forward
+   locally with their CLI/ngrok during development.
+4. Every `POST /v1/scan` on a paying org already reports usage in real time
+   via `report_scan_usage` -- no scheduler to provision, unlike a
+   Stripe-shaped integration.
 
 ## Running the service
 
@@ -87,8 +98,8 @@ container (see `.github/workflows/ci.yml`). `test_main.py` monkeypatches
 `engine.pipeline.scan` to a fixed result -- it only tests the API layer
 (auth, validation, usage caps, rate limiting, logging), not the engine's own
 detection logic (already covered by `engine/test_pipeline.py`). Likewise
-`test_billing.py` mocks the Stripe SDK -- it tests `billing.py`'s logic, not
-Stripe itself.
+`test_billing.py` mocks the Dodo Payments SDK -- it tests `billing.py`'s
+logic, not Dodo Payments itself.
 
 Each test runs inside a `SAVEPOINT` that's rolled back in teardown, so tests
 never see each other's data and the DB needs no manual cleanup between runs.

@@ -17,7 +17,7 @@ from sqlalchemy import create_engine
 
 pytest.importorskip("sqlalchemy")
 pytest.importorskip("fastapi")
-pytest.importorskip("stripe")
+pytest.importorskip("dodopayments")
 
 DATABASE_URL = os.environ.get("ANZENNA_TEST_DATABASE_URL") or os.environ.get("DATABASE_URL")
 if not DATABASE_URL:
@@ -175,11 +175,12 @@ def test_usage_endpoint_reflects_scan_count(client, session, org, api_key, raw_k
     assert body["limit"] == main.PLAN_LIMITS["free"]
 
 
-# --- Phase 8: billing --------------------------------------------------
+# --- Phase 8: billing (Dodo Payments) -----------------------------------
 
 def test_billing_checkout_requires_auth(client):
     resp = client.post(
-        "/v1/billing/checkout", json={"plan": "pro", "success_url": "https://a", "cancel_url": "https://b"}
+        "/v1/billing/checkout",
+        json={"plan": "pro", "email": "a@example.com", "return_url": "https://a", "cancel_url": "https://b"},
     )
     assert resp.status_code == 401
 
@@ -187,26 +188,35 @@ def test_billing_checkout_requires_auth(client):
 def test_billing_checkout_invalid_plan_is_400(client, api_key, raw_key):
     resp = client.post(
         "/v1/billing/checkout",
-        json={"plan": "ultra", "success_url": "https://a", "cancel_url": "https://b"},
+        json={"plan": "ultra", "email": "a@example.com", "return_url": "https://a", "cancel_url": "https://b"},
+        headers=auth(raw_key),
+    )
+    assert resp.status_code == 400
+
+
+def test_billing_checkout_missing_email_is_400(client, api_key, raw_key):
+    resp = client.post(
+        "/v1/billing/checkout",
+        json={"plan": "pro", "return_url": "https://a", "cancel_url": "https://b"},
         headers=auth(raw_key),
     )
     assert resp.status_code == 400
 
 
 def test_billing_checkout_missing_urls_is_400(client, api_key, raw_key):
-    resp = client.post("/v1/billing/checkout", json={"plan": "pro"}, headers=auth(raw_key))
+    resp = client.post("/v1/billing/checkout", json={"plan": "pro", "email": "a@example.com"}, headers=auth(raw_key))
     assert resp.status_code == 400
 
 
 def test_billing_checkout_success_returns_url(client, api_key, raw_key, monkeypatch):
-    monkeypatch.setattr(billing, "create_checkout_session", lambda *a, **k: "https://checkout.stripe.com/fake")
+    monkeypatch.setattr(billing, "create_checkout_session", lambda *a, **k: "https://checkout.dodopayments.com/fake")
     resp = client.post(
         "/v1/billing/checkout",
-        json={"plan": "pro", "success_url": "https://a", "cancel_url": "https://b"},
+        json={"plan": "pro", "email": "a@example.com", "return_url": "https://a", "cancel_url": "https://b"},
         headers=auth(raw_key),
     )
     assert resp.status_code == 200
-    assert resp.json() == {"checkout_url": "https://checkout.stripe.com/fake"}
+    assert resp.json() == {"checkout_url": "https://checkout.dodopayments.com/fake"}
 
 
 def test_billing_checkout_unconfigured_plan_returns_400(client, api_key, raw_key, monkeypatch):
@@ -216,25 +226,35 @@ def test_billing_checkout_unconfigured_plan_returns_400(client, api_key, raw_key
     monkeypatch.setattr(billing, "create_checkout_session", _raise)
     resp = client.post(
         "/v1/billing/checkout",
-        json={"plan": "pro", "success_url": "https://a", "cancel_url": "https://b"},
+        json={"plan": "pro", "email": "a@example.com", "return_url": "https://a", "cancel_url": "https://b"},
         headers=auth(raw_key),
     )
     assert resp.status_code == 400
 
 
-def test_stripe_webhook_invalid_signature_is_400(client):
-    resp = client.post("/webhooks/stripe", content=b"{}", headers={"stripe-signature": "bad"})
+def test_dodo_webhook_no_key_configured_is_400(client, monkeypatch):
+    # No DODO_PAYMENTS_WEBHOOK_KEY set -> the real SDK's webhooks.unwrap()
+    # raises before it would even need network/HMAC verification -- exercises
+    # the real (unmocked) client construction + failure path.
+    monkeypatch.delenv("DODO_PAYMENTS_WEBHOOK_KEY", raising=False)
+    resp = client.post("/webhooks/dodo-payments", content=b"{}", headers={"webhook-signature": "bad"})
     assert resp.status_code == 400
 
 
-def test_stripe_webhook_valid_event_applies_and_returns_200(client, session, org, monkeypatch):
-    import stripe
+def test_dodo_webhook_valid_event_applies_and_returns_200(client, session, org, monkeypatch):
+    from unittest.mock import MagicMock
 
     db.set_org_stripe_customer_id(session, org.id, "cus_test1")
-    fake_event = {"type": "customer.subscription.deleted", "data": {"object": {"customer": "cus_test1"}}}
-    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_test")
-    monkeypatch.setattr(stripe.Webhook, "construct_event", lambda *a, **k: fake_event)
+    fake_event_dict = {
+        "type": "subscription.cancelled",
+        "data": {"customer": {"customer_id": "cus_test1"}, "status": "cancelled"},
+    }
+    fake_event = MagicMock()
+    fake_event.model_dump.return_value = fake_event_dict
+    fake_dodo_client = MagicMock()
+    fake_dodo_client.webhooks.unwrap.return_value = fake_event
+    monkeypatch.setattr(billing, "dodo_client", lambda: fake_dodo_client)
 
-    resp = client.post("/webhooks/stripe", content=b"{}", headers={"stripe-signature": "sig"})
+    resp = client.post("/webhooks/dodo-payments", content=b"{}", headers={"webhook-signature": "sig"})
     assert resp.status_code == 200
     assert db.get_org(session, org.id).plan == "free"

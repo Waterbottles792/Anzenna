@@ -1,11 +1,11 @@
-"""Unit tests for api/billing.py -- Stripe calls are fully mocked (no
-network, no live Stripe account needed), against a real Postgres test DB for
-the org rows Phase 8 reads/writes. Same skip/fixture pattern as
+"""Unit tests for api/billing.py -- the Dodo Payments SDK is fully mocked
+(no network, no live Dodo account needed), against a real Postgres test DB
+for the org rows Phase 8 reads/writes. Same skip/fixture pattern as
 api/test_db.py.
 """
 
 import os
-from datetime import date
+import uuid
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -49,52 +49,50 @@ def org(session):
 
 
 @pytest.fixture(autouse=True)
-def _plan_price_ids(monkeypatch):
-    monkeypatch.setattr(billing, "PLAN_PRICE_IDS", {"pro": "price_pro_test", "scale": "price_scale_test"})
-    monkeypatch.setattr(billing, "_PRICE_ID_TO_PLAN", {"price_pro_test": "pro", "price_scale_test": "scale"})
+def _plan_product_ids(monkeypatch):
+    monkeypatch.setattr(billing, "PLAN_PRODUCT_IDS", {"pro": "prod_pro_test", "scale": "prod_scale_test"})
+    monkeypatch.setattr(billing, "_PRODUCT_ID_TO_PLAN", {"prod_pro_test": "pro", "prod_scale_test": "scale"})
 
 
-def fake_stripe(*, customer_id="cus_test1", checkout_url="https://checkout.stripe.com/test", subscription_items=None):
+def fake_client(*, customer_id="cus_test1", checkout_url="https://checkout.dodopayments.com/test"):
     fake = MagicMock()
-    fake.Customer.create.return_value = SimpleNamespace(id=customer_id)
-    fake.checkout.Session.create.return_value = SimpleNamespace(url=checkout_url)
-    fake.Subscription.list.return_value = SimpleNamespace(
-        data=[{"items": {"data": subscription_items}}] if subscription_items is not None else []
-    )
+    fake.customers.create.return_value = SimpleNamespace(customer_id=customer_id)
+    fake.checkout_sessions.create.return_value = SimpleNamespace(checkout_url=checkout_url)
     return fake
 
 
-def test_ensure_stripe_customer_creates_and_persists(session, org):
-    stripe = fake_stripe(customer_id="cus_new1")
-    customer_id = billing.ensure_stripe_customer(session, org.id, org_name=org.name, stripe_module=stripe)
+def test_ensure_dodo_customer_creates_and_persists(session, org):
+    client = fake_client(customer_id="cus_new1")
+    customer_id = billing.ensure_dodo_customer(session, org.id, org_name=org.name, email="a@example.com", client=client)
     assert customer_id == "cus_new1"
-    stripe.Customer.create.assert_called_once()
+    client.customers.create.assert_called_once_with(email="a@example.com", name=org.name)
     assert db.get_org(session, org.id).stripe_customer_id == "cus_new1"
 
 
-def test_ensure_stripe_customer_idempotent_when_already_set(session, org):
+def test_ensure_dodo_customer_idempotent_when_already_set(session, org):
     db.set_org_stripe_customer_id(session, org.id, "cus_existing")
-    stripe = fake_stripe()
-    customer_id = billing.ensure_stripe_customer(session, org.id, org_name=org.name, stripe_module=stripe)
+    client = fake_client()
+    customer_id = billing.ensure_dodo_customer(session, org.id, org_name=org.name, email="a@example.com", client=client)
     assert customer_id == "cus_existing"
-    stripe.Customer.create.assert_not_called()
+    client.customers.create.assert_not_called()
 
 
 def test_create_checkout_session_returns_url(session, org):
-    stripe = fake_stripe(checkout_url="https://checkout.stripe.com/session_123")
+    client = fake_client(checkout_url="https://checkout.dodopayments.com/session_123")
     url = billing.create_checkout_session(
         session,
         org.id,
         org_name=org.name,
+        email="a@example.com",
         plan="pro",
-        success_url="https://app.example/success",
+        return_url="https://app.example/success",
         cancel_url="https://app.example/cancel",
-        stripe_module=stripe,
+        client=client,
     )
-    assert url == "https://checkout.stripe.com/session_123"
-    _, kwargs = stripe.checkout.Session.create.call_args
-    assert kwargs["line_items"] == [{"price": "price_pro_test", "quantity": 1}]
-    assert kwargs["mode"] == "subscription"
+    assert url == "https://checkout.dodopayments.com/session_123"
+    _, kwargs = client.checkout_sessions.create.call_args
+    assert kwargs["product_cart"] == [{"product_id": "prod_pro_test", "quantity": 1}]
+    assert kwargs["customer"] == {"customer_id": "cus_test1"}
 
 
 def test_create_checkout_session_unknown_plan_raises(session, org):
@@ -103,108 +101,92 @@ def test_create_checkout_session_unknown_plan_raises(session, org):
             session,
             org.id,
             org_name=org.name,
+            email="a@example.com",
             plan="ultra",
-            success_url="https://app.example/success",
+            return_url="https://app.example/success",
             cancel_url="https://app.example/cancel",
-            stripe_module=fake_stripe(),
+            client=fake_client(),
         )
 
 
-def test_report_usage_no_stripe_customer_is_noop(session, org):
-    period = date.today().replace(day=1)
-    assert billing.report_usage(session, org.id, period, stripe_module=fake_stripe()) is None
+def test_report_scan_usage_no_dodo_customer_is_noop(session, org):
+    assert billing.report_scan_usage(session, org.id, uuid.uuid4(), client=fake_client()) is False
 
 
-def test_report_usage_no_active_subscription_is_noop(session, org):
+def test_report_scan_usage_ingests_event(session, org):
     db.set_org_stripe_customer_id(session, org.id, "cus_test1")
-    period = date.today().replace(day=1)
-    assert billing.report_usage(session, org.id, period, stripe_module=fake_stripe()) is None
+    client = fake_client()
+    scan_id = uuid.uuid4()
+
+    ok = billing.report_scan_usage(session, org.id, scan_id, client=client)
+
+    assert ok is True
+    client.usage_events.ingest.assert_called_once_with(
+        events=[{"customer_id": "cus_test1", "event_id": str(scan_id), "event_name": "scan"}]
+    )
 
 
-def test_report_usage_creates_usage_record(session, org):
+def test_report_scan_usage_swallows_client_errors(session, org):
     db.set_org_stripe_customer_id(session, org.id, "cus_test1")
-    period = date.today().replace(day=1)
-    db.increment_usage(session, org.id, period, by=7)
-    stripe = fake_stripe(subscription_items=[{"id": "si_123", "price": {"id": "price_pro_test"}}])
+    client = fake_client()
+    client.usage_events.ingest.side_effect = RuntimeError("network down")
 
-    quantity = billing.report_usage(session, org.id, period, stripe_module=stripe)
-
-    assert quantity == 7
-    stripe.SubscriptionItem.create_usage_record.assert_called_once_with("si_123", quantity=7, action="set")
+    assert billing.report_scan_usage(session, org.id, uuid.uuid4(), client=client) is False
 
 
-def test_report_usage_for_all_orgs_skips_orgs_without_stripe_customer(session, org):
-    other = db.create_org(session, "Other Org")
-    db.set_org_stripe_customer_id(session, other.id, "cus_other")
-    period = date.today().replace(day=1)
-    db.increment_usage(session, other.id, period, by=4)
-    stripe = fake_stripe(subscription_items=[{"id": "si_999", "price": {"id": "price_pro_test"}}])
-
-    reported = billing.report_usage_for_all_orgs(session, period, stripe_module=stripe)
-
-    assert org.id not in reported
-    assert reported[other.id] == 4
-
-
-def test_handle_webhook_subscription_created_upgrades_plan(session, org):
+def test_handle_webhook_subscription_active_upgrades_plan(session, org):
     db.set_org_stripe_customer_id(session, org.id, "cus_test1")
     event = {
-        "type": "customer.subscription.created",
-        "data": {
-            "object": {
-                "customer": "cus_test1",
-                "status": "active",
-                "items": {"data": [{"price": {"id": "price_pro_test"}}]},
-            }
-        },
+        "type": "subscription.active",
+        "data": {"customer": {"customer_id": "cus_test1"}, "status": "active", "product_id": "prod_pro_test"},
     }
     billing.handle_webhook_event(session, event)
     assert db.get_org(session, org.id).plan == "pro"
 
 
-def test_handle_webhook_subscription_updated_to_scale(session, org):
+def test_handle_webhook_subscription_renewed_to_scale(session, org):
     db.set_org_stripe_customer_id(session, org.id, "cus_test1")
     db.set_org_plan(session, org.id, "pro")
     event = {
-        "type": "customer.subscription.updated",
-        "data": {
-            "object": {
-                "customer": "cus_test1",
-                "status": "active",
-                "items": {"data": [{"price": {"id": "price_scale_test"}}]},
-            }
-        },
+        "type": "subscription.renewed",
+        "data": {"customer": {"customer_id": "cus_test1"}, "status": "active", "product_id": "prod_scale_test"},
     }
     billing.handle_webhook_event(session, event)
     assert db.get_org(session, org.id).plan == "scale"
 
 
-def test_handle_webhook_subscription_past_due_downgrades_to_free(session, org):
+def test_handle_webhook_subscription_on_hold_downgrades_to_free(session, org):
     db.set_org_stripe_customer_id(session, org.id, "cus_test1")
     db.set_org_plan(session, org.id, "pro")
     event = {
-        "type": "customer.subscription.updated",
-        "data": {"object": {"customer": "cus_test1", "status": "past_due", "items": {"data": []}}},
+        "type": "subscription.on_hold",
+        "data": {"customer": {"customer_id": "cus_test1"}, "status": "on_hold", "product_id": "prod_pro_test"},
     }
     billing.handle_webhook_event(session, event)
     assert db.get_org(session, org.id).plan == "free"
 
 
-def test_handle_webhook_subscription_deleted_downgrades_to_free(session, org):
+def test_handle_webhook_subscription_cancelled_downgrades_to_free(session, org):
     db.set_org_stripe_customer_id(session, org.id, "cus_test1")
     db.set_org_plan(session, org.id, "scale")
-    event = {"type": "customer.subscription.deleted", "data": {"object": {"customer": "cus_test1"}}}
+    event = {
+        "type": "subscription.cancelled",
+        "data": {"customer": {"customer_id": "cus_test1"}, "status": "cancelled", "product_id": "prod_scale_test"},
+    }
     billing.handle_webhook_event(session, event)
     assert db.get_org(session, org.id).plan == "free"
 
 
 def test_handle_webhook_unknown_customer_is_noop(session):
-    event = {"type": "customer.subscription.deleted", "data": {"object": {"customer": "cus_does_not_exist"}}}
+    event = {
+        "type": "subscription.cancelled",
+        "data": {"customer": {"customer_id": "cus_does_not_exist"}, "status": "cancelled"},
+    }
     billing.handle_webhook_event(session, event)  # should not raise
 
 
-def test_handle_webhook_unhandled_event_type_is_noop(session, org):
+def test_handle_webhook_non_subscription_event_is_noop(session, org):
     db.set_org_stripe_customer_id(session, org.id, "cus_test1")
-    event = {"type": "invoice.payment_failed", "data": {"object": {"customer": "cus_test1"}}}
+    event = {"type": "payment.failed", "data": {"customer": {"customer_id": "cus_test1"}}}
     billing.handle_webhook_event(session, event)
     assert db.get_org(session, org.id).plan == "free"

@@ -150,7 +150,7 @@ async def post_scan(
         raise HTTPException(status_code=500, detail="scan failed")
     latency_ms = int((time.perf_counter() - started) * 1000)
 
-    db.log_scan(
+    scan_log = db.log_scan(
         session,
         org_id=auth.org_id,
         api_key_id=auth.api_key_id,
@@ -162,6 +162,7 @@ async def post_scan(
         text_preview=text,
     )
     db.increment_usage(session, auth.org_id, period_start)
+    billing.report_scan_usage(session, auth.org_id, scan_log.id)  # no-op for free-plan orgs; never raises
 
     return {**result.to_dict(), "latency_ms": latency_ms}
 
@@ -200,12 +201,15 @@ async def post_billing_checkout(
         raise HTTPException(status_code=400, detail="malformed JSON body")
 
     plan = body.get("plan")
-    success_url = body.get("success_url")
+    email = body.get("email")
+    return_url = body.get("return_url")
     cancel_url = body.get("cancel_url")
     if plan not in ("pro", "scale"):
         raise HTTPException(status_code=400, detail="'plan' must be 'pro' or 'scale'")
-    if not isinstance(success_url, str) or not isinstance(cancel_url, str) or not success_url or not cancel_url:
-        raise HTTPException(status_code=400, detail="'success_url' and 'cancel_url' are required")
+    if not isinstance(email, str) or not email:
+        raise HTTPException(status_code=400, detail="'email' is required")
+    if not isinstance(return_url, str) or not isinstance(cancel_url, str) or not return_url or not cancel_url:
+        raise HTTPException(status_code=400, detail="'return_url' and 'cancel_url' are required")
 
     org = db.get_org(session, auth.org_id)
     assert org is not None  # FK guarantees this
@@ -214,8 +218,9 @@ async def post_billing_checkout(
             session,
             auth.org_id,
             org_name=org.name,
+            email=email,
             plan=plan,
-            success_url=success_url,
+            return_url=return_url,
             cancel_url=cancel_url,
         )
     except ValueError as exc:
@@ -223,19 +228,23 @@ async def post_billing_checkout(
     return {"checkout_url": checkout_url}
 
 
-@app.post("/webhooks/stripe")
-async def stripe_webhook(request: Request, session: Session = Depends(get_session)):
-    import stripe  # heavy/optional (Phase 8's `billing` extra) -- lazy import
-
+@app.post("/webhooks/dodo-payments")
+async def dodo_payments_webhook(request: Request, session: Session = Depends(get_session)):
     payload = await request.body()
     try:
-        event = stripe.Webhook.construct_event(
-            payload, request.headers.get("stripe-signature", ""), os.environ["STRIPE_WEBHOOK_SECRET"]
+        client = billing.dodo_client()
+        event = client.webhooks.unwrap(
+            payload.decode("utf-8"),
+            headers={
+                "webhook-id": request.headers.get("webhook-id", ""),
+                "webhook-signature": request.headers.get("webhook-signature", ""),
+                "webhook-timestamp": request.headers.get("webhook-timestamp", ""),
+            },
         )
     except Exception:
         raise HTTPException(status_code=400, detail="invalid webhook signature")
 
-    billing.handle_webhook_event(session, event)
+    billing.handle_webhook_event(session, event.model_dump())
     return {"received": True}
 
 
