@@ -1,4 +1,4 @@
-# api/ — DB layer (Phase 6) + FastAPI service (Phase 7)
+# api/ — DB layer (Phase 6) + FastAPI service (Phase 7) + billing (Phase 8)
 
 SQLAlchemy models + CRUD helpers against `docs/contracts/DB_SCHEMA.sql`
 (the source of truth -- contract files "never change after Phase 0" per
@@ -17,10 +17,37 @@ SQLAlchemy models + CRUD helpers against `docs/contracts/DB_SCHEMA.sql`
   enforcement per `PLAN_LIMITS`, and scan logging. Calls `engine.pipeline.scan`
   -- the only engine dependency, per `DETECTION_INTERFACE.md`. The contract's
   session-auth dashboard endpoints (`/v1/keys`, `/v1/logs`) aren't here yet;
-  they need Phase 9's auth provider first.
+  they need Phase 9's auth provider first. Also hosts the Phase 8 billing
+  routes below, which aren't part of `API_CONTRACT.md`.
+- `billing.py` — Stripe: `ensure_stripe_customer`/`create_checkout_session`
+  (org upgrade flow), `report_usage`/`report_usage_for_all_orgs` (metered
+  usage records, call the batch variant from a scheduler -- provisioning
+  that scheduler is a Phase 12 infra concern, not this module's job), and
+  `handle_webhook_event` (applies subscription created/updated/deleted
+  events to `orgs.plan`). Every Stripe SDK call takes an injectable
+  `stripe_module` param, so `test_billing.py` runs against a mocked SDK with
+  zero network calls -- no live Stripe account needed to develop or test
+  this. `main.py` exposes it as `POST /v1/billing/checkout` and
+  `POST /webhooks/stripe`.
 
-Requires the `db` and `api` extras: `pip install -e ".[db,api]"` (installs
-SQLAlchemy, Alembic, `psycopg`, FastAPI, Uvicorn).
+Requires the `db`, `api`, and `billing` extras: `pip install -e ".[db,api,billing]"`
+(installs SQLAlchemy, Alembic, `psycopg`, FastAPI, Uvicorn, `stripe`).
+
+### Going live with real Stripe
+
+Nothing in this repo talks to a real Stripe account -- `billing.py` is built
+and tested entirely against a mocked SDK. To actually take payments:
+
+1. In the Stripe dashboard (test mode first), create two recurring metered
+   prices, one for `pro` and one for `scale`. Set their ids as
+   `STRIPE_PRICE_ID_PRO`/`STRIPE_PRICE_ID_SCALE` (see `.env.example`).
+2. Set `STRIPE_SECRET_KEY` (dashboard) and `STRIPE_WEBHOOK_SECRET` (from
+   `stripe listen --forward-to localhost:8000/webhooks/stripe`, or the
+   dashboard once a production endpoint exists).
+3. Forward webhooks locally with the Stripe CLI (`stripe listen ...` above)
+   while testing a real checkout in test mode.
+4. Point a scheduler at `billing.report_usage_for_all_orgs(session, period_start)`
+   once a day, per plan.md's Phase 8 task 2.
 
 ## Running the service
 
@@ -50,16 +77,18 @@ connection string lives in a committed file.
 
 ```bash
 export ANZENNA_TEST_DATABASE_URL="postgresql+psycopg://anzenna:anzenna@localhost:55432/anzenna_test"
-pytest api/test_db.py api/test_main.py
+pytest api/test_db.py api/test_main.py api/test_billing.py
 ```
 
-Both files skip themselves entirely if neither `ANZENNA_TEST_DATABASE_URL`
+All three files skip themselves entirely if neither `ANZENNA_TEST_DATABASE_URL`
 nor `DATABASE_URL` is set -- the rest of the suite (`engine/`, `sdks/`) never
 needs Postgres. CI runs these against a real `postgres:16-alpine` service
 container (see `.github/workflows/ci.yml`). `test_main.py` monkeypatches
 `engine.pipeline.scan` to a fixed result -- it only tests the API layer
 (auth, validation, usage caps, rate limiting, logging), not the engine's own
-detection logic (already covered by `engine/test_pipeline.py`).
+detection logic (already covered by `engine/test_pipeline.py`). Likewise
+`test_billing.py` mocks the Stripe SDK -- it tests `billing.py`'s logic, not
+Stripe itself.
 
 Each test runs inside a `SAVEPOINT` that's rolled back in teardown, so tests
 never see each other's data and the DB needs no manual cleanup between runs.
