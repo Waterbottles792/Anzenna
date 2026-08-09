@@ -71,6 +71,34 @@ def test_get_org_missing_returns_none(session):
     assert db.get_org(session, uuid.uuid4()) is None
 
 
+def test_set_org_stripe_customer_id(session, org):
+    updated = db.set_org_stripe_customer_id(session, org.id, "cus_abc123")
+    assert updated.stripe_customer_id == "cus_abc123"
+    assert db.get_org(session, org.id).stripe_customer_id == "cus_abc123"
+
+
+def test_get_org_by_stripe_customer_id(session, org):
+    db.set_org_stripe_customer_id(session, org.id, "cus_xyz789")
+    found = db.get_org_by_stripe_customer_id(session, "cus_xyz789")
+    assert found is not None
+    assert found.id == org.id
+
+
+def test_get_org_by_stripe_customer_id_unknown_returns_none(session):
+    assert db.get_org_by_stripe_customer_id(session, "cus_nonexistent") is None
+
+
+def test_set_org_plan(session, org):
+    assert org.plan == "free"
+    updated = db.set_org_plan(session, org.id, "pro")
+    assert updated.plan == "pro"
+    assert db.get_org(session, org.id).plan == "pro"
+
+
+def test_set_org_plan_missing_org_returns_none(session):
+    assert db.set_org_plan(session, uuid.uuid4(), "pro") is None
+
+
 def test_create_user(session, org):
     user = db.create_user(session, org.id, "jane@example.com")
     assert user.org_id == org.id

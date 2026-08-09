@@ -53,6 +53,28 @@ def get_org(session: Session, org_id: uuid.UUID) -> Optional[Org]:
     return session.get(Org, org_id)
 
 
+def get_org_by_stripe_customer_id(session: Session, stripe_customer_id: str) -> Optional[Org]:
+    """Phase 8's webhook handler: a Stripe event carries a customer id, not
+    an org_id, so it needs to look the org up the other way round."""
+    return session.scalar(select(Org).where(Org.stripe_customer_id == stripe_customer_id))
+
+
+def set_org_stripe_customer_id(session: Session, org_id: uuid.UUID, stripe_customer_id: str) -> Optional[Org]:
+    org = session.get(Org, org_id)
+    if org is not None:
+        org.stripe_customer_id = stripe_customer_id
+        session.flush()
+    return org
+
+
+def set_org_plan(session: Session, org_id: uuid.UUID, plan: str) -> Optional[Org]:
+    org = session.get(Org, org_id)
+    if org is not None:
+        org.plan = plan
+        session.flush()
+    return org
+
+
 # --- users --------------------------------------------------------------
 
 def create_user(session: Session, org_id: uuid.UUID, email: str) -> User:
