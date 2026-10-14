@@ -4,6 +4,49 @@ Grounded in the actual code (`engine/`, `api/`, `docs/`). Where the code differs
 
 ---
 
+## What is Anzenna?
+
+**One sentence:** Anzenna is an API-first security firewall that sits between an application and its LLM, inspecting what goes *into* the model (prompts, retrieved documents, tool metadata) and what comes *out* (responses), and returning an `allow` / `flag` / `block` verdict with a 0–100 risk score, human-readable reasons, and OWASP LLM Top 10 tags.
+
+**Elevator version:** "Companies are wiring LLMs into products that hold real data and real permissions, but the model can't tell the developer's instructions from an attacker's text. Anzenna is a drop-in scanning layer: one `POST /v1/scan` call before and after the model. It combines fast deterministic rules, an ML classifier and a cost-controlled LLM judge to catch prompt injection, jailbreaks, encoded evasion, PII/secret leakage and poisoned MCP tools."
+
+**What it is *not*:** not a model, not a guarantee, and not a replacement for least privilege. It's a detection-and-telemetry control that reduces risk and gives you an audit trail.
+
+**Shape of the product (from `docs/plan.md`):**
+- `engine/` — the detection pipeline (pure Python, no web dependencies)
+- `api/` — FastAPI service, PostgreSQL, API-key auth, rate limiting, usage quotas, billing hooks
+- `sdks/mcp/` — an MCP server so agents can call the scanner as a tool
+- Planned: dashboard, Python/Node SDKs, docs site
+
+**Name:** *Anzenna* is a brand name, not a technical term. If asked, say it's meant to evoke "safety/security" (the Japanese *anzen*, 安全, means safe) — only say this if it's actually where you got it; otherwise just say it's a brand name you picked.
+
+## Why I built it (motivation)
+
+> **Edit this section to be true to you.** The repo records *what* you built and how, but not your personal reasons — I can't know those, and an interviewer will notice a scripted-sounding answer. Below is a draft built from what the project itself shows, written in first person. Keep the parts that are genuinely yours, rewrite the rest in your own words, and add a specific moment or story if you have one.
+
+**Draft answer (≈45 seconds):**
+
+"I built Anzenna because LLM security felt like the most interesting open problem in application security right now. I came to it with the question: *what does a firewall look like when the attack language is English?* In traditional web security there's a parser and a grammar, so you can separate code from data. With LLMs that boundary doesn't exist, and as soon as models get tools — email, files, APIs — a successful injection becomes a real action, not just a bad sentence.
+
+I wanted to learn that problem by building, not just reading about it. So I took the OWASP LLM Top 10 as my spec and tried to implement defenses for the main entries: injection and jailbreaks, sensitive-information disclosure, system-prompt leakage, and the newer agentic risk of MCP tool poisoning. I deliberately built it as a *product* — an authenticated API with rate limiting, usage quotas, hashed keys and an audit log — because I wanted to deal with the unglamorous parts of security engineering too: threat-modeling my own service, privacy of logs, abuse and cost control, not only the detection logic.
+
+The most valuable thing I learned is where the approach breaks. I measured my first layer honestly — high precision but only about 36% recall — and that taught me why defense in depth is necessary and why no single filter can claim to 'prevent' prompt injection."
+
+**Themes you can truthfully draw from the repo (pick the ones that are real for you):**
+1. **A new, fast-moving attack surface.** Skills transfer from web/app-sec (input validation, DLP, authn/authz, rate limiting), but the core problem is genuinely unsolved — good for learning and for contributing.
+2. **Learn by building to a spec.** Mapping features to the OWASP LLM Top 10 gave a concrete, externally defined target.
+3. **Security engineering, not just ML.** The project includes threat modeling, key hashing, rate limiting, privacy-minimal logging, webhook signature verification, and graceful-degradation design.
+4. **Honest measurement.** The repo ships an eval harness, a documented threshold sweep, and written caveats about what the numbers do and don't show.
+5. **Product thinking.** The plan covers API contract, DB schema, billing, SDKs and dashboard — evidence you think about how security tooling is actually adopted (an easy integration point, clear verdicts, audit-ready output).
+
+**Follow-up questions to prepare for:**
+- *"What's the real-world incident or research that motivated this?"* Have one concrete example ready — e.g., the indirect-injection research on LLM-integrated apps (Greshake et al., 2023), the MCP tool-poisoning disclosures from Invariant Labs, or the "Bing Chat / Sydney" system-prompt leak. Name the one that actually influenced you.
+- *"Who is the user?"* A team shipping an LLM feature (chatbot, RAG assistant, agent) that needs a guardrail and an audit trail without building one.
+- *"Why not use an existing tool (Lakera, LLM Guard, NeMo Guardrails, Prompt Shields)?"* Because building one teaches the failure modes; and I used the same open-source classifier (ProtectAI DeBERTa) those ecosystems use, so the learning transfers. A real team should evaluate existing tools first.
+- *"What would you want to learn next?"* Adaptive attacks against my own firewall, canonicalization, and conversation-level detection.
+
+---
+
 ## 0. Facts about your own project (memorize these)
 
 | Item | Reality in the repo |
